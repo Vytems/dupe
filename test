@@ -351,10 +351,13 @@ document.head.appendChild(style);
     }
 
 
-    class EnhancedTypingSimulator {
+   class EnhancedTypingSimulator {
     constructor(targetFrame, options = {}) {
         this.targetFrame = targetFrame;
         this.isTyping = false;
+        this.isPaused = false;              // ← Added for pause/resume
+        this.currentIndex = 0;              // ← Tracks which character we're about to type
+        this.pausedPromiseResolver = null;  // ← For resolving the pause promise
 
         this.typeSimulator = new TypeSimulator({
             baseIKI: options.baseIKI || 120,
@@ -376,8 +379,10 @@ document.head.appendChild(style);
         this.currentText = '';
         this.isInErrorCorrection = false;
         this.lastTypoPosition = -1;
-
     }
+
+    // ... rest of the class (pause(), resume(), typeText(), etc.) ...
+}
 
 
         stopTyping() {
@@ -499,63 +504,70 @@ document.head.appendChild(style);
         }
 
         async typeText(text) {
-            if (!this.targetFrame) {
-                throw new Error('Target frame not found');
-            }
+    if (!this.targetFrame) {
+        throw new Error('Target frame not found');
+    }
 
-            const frameWindow = this.targetFrame.contentWindow;
-            const frameDoc = frameWindow.document;
-            this.startTime = Date.now();
-            this.isTyping = true;
+    const frameWindow = this.targetFrame.contentWindow;
+    const frameDoc = frameWindow.document;
+    this.startTime = Date.now();
+    this.isTyping = true;
+    this.currentIndex = 0;          // Reset position
 
-            for (let i = 0; i < text.length; i++) {
-                if (!this.isTyping) break;
-
-                const timing = this.typeSimulator.typeChar(text[i], false);
-                const currentTime = Date.now();
-                const targetTime = this.startTime + (timing.keydownTime - this.typeSimulator.lastKeyTime);
-
-                const waitTime = Math.max(0, targetTime - currentTime);
-                if (waitTime > 0) {
-                    await this.delay(waitTime);
-                }
-
-                // Handle typo and potential correction
-                if (timing.isTypo) {
-                    this.currentText += timing.key; // Add the typo
-                    this.lastTypoPosition = this.currentText.length - 1;
-
-                    // Simulate typing the typo
-                    await this.simulateKeySequence(frameWindow, frameDoc, timing);
-
-                    // Check if we should enter error correction mode
-                    if (Math.random() < this.typeSimulator.errorCorrectionChance) {
-                        // Determine how many characters to delete
-                        const charsToDelete = Math.floor(Math.random() * this.typeSimulator.errorCorrectionRange) + 1;
-                        const actualCharsToDelete = Math.min(charsToDelete, this.currentText.length);
-
-                        // Delete characters
-                        for (let j = 0; j < actualCharsToDelete; j++) {
-                            this.currentText = this.currentText.slice(0, -1);
-                            await this.simulateBackspace(frameWindow, frameDoc);
-                        }
-
-                        // Retype the correct sequence
-                        const startPos = i - actualCharsToDelete + 1;
-                        for (let j = startPos; j <= i; j++) {
-                            const correctionTiming = this.typeSimulator.typeChar(text[j], true);
-                            this.currentText += text[j];
-                            await this.simulateKeySequence(frameWindow, frameDoc, correctionTiming);
-                        }
-                    }
-                } else {
-                    this.currentText += timing.key;
-                    await this.simulateKeySequence(frameWindow, frameDoc, timing);
-                }
-            }
-
-            this.isTyping = false;
+    while (this.currentIndex < text.length && this.isTyping) {
+        // Wait if paused
+        if (this.isPaused) {
+            await new Promise(resolve => {
+                this.pausedPromiseResolver = resolve;
+            });
         }
+
+        if (!this.isTyping) break;
+
+        const timing = this.typeSimulator.typeChar(text[this.currentIndex], false);
+
+        // Existing timing calculation (keep your original code here)
+        const currentTime = Date.now();
+        const targetTime = this.startTime + (timing.keydownTime - this.typeSimulator.lastKeyTime);
+        const waitTime = Math.max(0, targetTime - currentTime);
+        if (waitTime > 0) {
+            await this.delay(waitTime);
+        }
+
+        // Typo + correction handling (keep your existing logic exactly as it is)
+        if (timing.isTypo) {
+            this.currentText += timing.key;
+            this.lastTypoPosition = this.currentText.length - 1;
+
+            await this.simulateKeySequence(frameWindow, frameDoc, timing);
+
+            if (Math.random() < this.typeSimulator.errorCorrectionChance) {
+                const charsToDelete = Math.floor(Math.random() * this.typeSimulator.errorCorrectionRange) + 1;
+                const actualCharsToDelete = Math.min(charsToDelete, this.currentText.length);
+
+                for (let j = 0; j < actualCharsToDelete; j++) {
+                    this.currentText = this.currentText.slice(0, -1);
+                    await this.simulateBackspace(frameWindow, frameDoc);
+                }
+
+                const startPos = this.currentIndex - actualCharsToDelete + 1;
+                for (let j = startPos; j <= this.currentIndex; j++) {
+                    const correctionTiming = this.typeSimulator.typeChar(text[j], true);
+                    this.currentText += text[j];
+                    await this.simulateKeySequence(frameWindow, frameDoc, correctionTiming);
+                }
+            }
+        } else {
+            this.currentText += timing.key;
+            await this.simulateKeySequence(frameWindow, frameDoc, timing);
+        }
+
+        this.currentIndex++;
+    }
+
+    this.isTyping = false;
+    this.isPaused = false;
+}
     }
 
     let currentSimulator = null;
@@ -597,67 +609,75 @@ document.head.appendChild(style);
 
 
     async function startTyping() {
-        debug('Starting typing simulation');
-        const text = document.querySelector('#text-input').value;
-        if (!text) {
-            alert('Please enter some text to type');
-            return;
-        }
-    
-        document.querySelector('#typing-simulator-panel').style.display = 'none';
-    
-        const blocker = document.querySelector('#typing-blocker');
-        const button = document.querySelector('#type-simulator-button');
-    
-        const editor = document.querySelector('.docs-editor-container');
-        if (editor) {
-            const rect = editor.getBoundingClientRect();
-            blocker.style.top = `${rect.top}px`;
-            blocker.style.left = `${rect.left}px`;
-            blocker.style.width = `${rect.width}px`;
-            blocker.style.height = `${rect.height}px`;
-        }
-    
-        blocker.style.display = 'block';
-        blocker.classList.add('typing-blocker-active');
-        button.classList.add('typing-simulator-button-active');
-        button.textContent = 'Stop Typing';
-    
-        // Replace these two lines:
-        // const profile = document.querySelector('#profile-select').value;
-        // const options = typingProfiles[profile];
-        
-        // With this new code:
-        const isAdvanced = document.querySelector('#advanced-mode').checked;
-        let options;
-        
-        if (isAdvanced) {
-            options = {
-                baseIKI: parseFloat(document.querySelector('#baseIKI').value),
-                ikiSD: parseFloat(document.querySelector('#ikiSD').value),
-                rolloverRatio: parseFloat(document.querySelector('#rolloverRatio').value),
-                errorRate: parseFloat(document.querySelector('#errorRate').value),
-                errorCorrectionRange: parseInt(document.querySelector('#errorCorrectionRange').value),
-                errorCorrectionChance: parseFloat(document.querySelector('#errorCorrectionChance').value)
-            };
-        } else {
-            const profile = document.querySelector('#profile-select').value;
-            options = typingProfiles[profile];
-        }
-    
-        try {
-            await simulateTyping(text, options);
-        } catch (error) {
-            console.error('Typing failed:', error);
-            alert('An error occurred while typing. Check the console for details.');
-        } finally {
-            blocker.style.display = 'none';
-            blocker.classList.remove('typing-blocker-active');
-            button.classList.remove('typing-simulator-button-active');
-            button.textContent = 'Type Simulator';
-            currentSimulator = null;
-        }
+    debug('Starting typing simulation');
+    const text = document.querySelector('#text-input').value;
+    if (!text) {
+        alert('Please enter some text to type');
+        return;
     }
+
+    document.querySelector('#typing-simulator-panel').style.display = 'none';
+
+    const blocker = document.querySelector('#typing-blocker');
+    const mainButton = document.querySelector('#type-simulator-button');
+    const pauseButton = document.querySelector('#pause-typing');
+
+    // Position blocker
+    const editor = document.querySelector('.docs-editor-container');
+    if (editor) {
+        const rect = editor.getBoundingClientRect();
+        blocker.style.top = `${rect.top}px`;
+        blocker.style.left = `${rect.left}px`;
+        blocker.style.width = `${rect.width}px`;
+        blocker.style.height = `${rect.height}px`;
+    }
+
+    blocker.style.display = 'block';
+    blocker.classList.add('typing-blocker-active');
+    mainButton.classList.add('typing-simulator-button-active');
+    mainButton.textContent = 'Stop Typing';
+
+    // Show pause button, hide start button
+    pauseButton.style.display = 'inline-block';
+    pauseButton.textContent = 'Pause';
+    pauseButton.style.background = '#4285f4';
+    document.querySelector('#start-typing').style.display = 'none';
+
+    // Get options (your existing code)
+    const isAdvanced = document.querySelector('#advanced-mode').checked;
+    let options;
+    if (isAdvanced) {
+        options = {
+            baseIKI: parseFloat(document.querySelector('#baseIKI').value),
+            ikiSD: parseFloat(document.querySelector('#ikiSD').value),
+            rolloverRatio: parseFloat(document.querySelector('#rolloverRatio').value),
+            errorRate: parseFloat(document.querySelector('#errorRate').value),
+            errorCorrectionRange: parseInt(document.querySelector('#errorCorrectionRange').value),
+            errorCorrectionChance: parseFloat(document.querySelector('#errorCorrectionChance').value)
+        };
+    } else {
+        const profile = document.querySelector('#profile-select').value;
+        options = typingProfiles[profile];
+    }
+
+    try {
+        await simulateTyping(text, options);
+    } catch (error) {
+        console.error('Typing failed:', error);
+        alert('An error occurred while typing. Check the console for details.');
+    } finally {
+        // Reset UI
+        blocker.style.display = 'none';
+        blocker.classList.remove('typing-blocker-active');
+        mainButton.classList.remove('typing-simulator-button-active');
+        mainButton.textContent = 'Type Simulator';
+
+        pauseButton.style.display = 'none';
+        document.querySelector('#start-typing').style.display = 'inline-block';
+
+        currentSimulator = null;
+    }
+}
 
     function createUI() {
         debug('Creating UI elements');
@@ -802,6 +822,15 @@ document.head.appendChild(style);
         startButton.className = 'typing-simulator-button';
         startButton.textContent = 'Start Typing';
         panel.appendChild(startButton);
+
+        // Create Pause button
+        const pauseButton = document.createElement('button');
+        pauseButton.id = 'pause-typing';
+        pauseButton.className = 'typing-simulator-button';
+        pauseButton.textContent = 'Pause';
+        pauseButton.style.marginLeft = '12px';
+        pauseButton.style.display = 'none'; // hidden until typing starts
+        panel.appendChild(pauseButton);
     
         // Add panel to document
         document.body.appendChild(panel);
@@ -829,7 +858,21 @@ document.head.appendChild(style);
                 panel.style.display = 'block';
             }
         });
-    
+    pauseButton.addEventListener('click', () => {
+    if (!currentSimulator) return;
+
+    if (currentSimulator.isPaused) {
+        // Resume
+        currentSimulator.resume();
+        pauseButton.textContent = 'Pause';
+        pauseButton.style.background = '#4285f4';
+    } else {
+        // Pause
+        currentSimulator.pause();
+        pauseButton.textContent = 'Resume';
+        pauseButton.style.background = '#ff9800'; // orange to indicate paused
+    }
+});
         advancedCheck.addEventListener('change', (e) => {
             const basicSection = document.querySelector('.basic-section');
             const advancedSection = document.querySelector('.advanced-section');
